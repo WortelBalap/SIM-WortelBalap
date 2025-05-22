@@ -14,41 +14,101 @@ st.set_page_config(
 )
 
 # =========================
-# 🔐 Login Role
+# 🔐 Login & Session State
 # =========================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "role" not in st.session_state:
     st.session_state.role = None
+if "username" not in st.session_state:
+    st.session_state.username = None
 
-# Dummy credentials
+# Dummy hardcoded credentials
 USERS = {
     "admin": {"password": "admin123", "role": "admin"},
     "buyer": {"password": "buyer123", "role": "buyer"}
 }
 
-def login():
-    st.title("🔐 Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        user = USERS.get(username)
-        if user and user["password"] == password:
-            st.session_state.logged_in = True
-            st.session_state.role = user["role"]
-            st.success(f"Selamat datang, {username} ({user['role']})!")
-            st.rerun()
-        else:
-            st.error("Username atau password salah.")
+# =========================
+# 🔐 Login & Register Page
+# =========================
+def login_page():
+    st.title("🔐 Login / Register")
+    tab_login, tab_register = st.tabs(["Login", "Buat Akun"])
+
+    # --- Login Tab ---
+    with tab_login:
+        username = st.text_input("Username", key="login_user")
+        password = st.text_input("Password", type="password", key="login_pass")
+        if st.button("Login"):
+            # Cek hardcoded user dulu
+            user = USERS.get(username)
+            if user and user["password"] == password:
+                st.session_state.logged_in = True
+                st.session_state.role = user["role"]
+                st.session_state.username = username
+                st.success(f"Selamat datang, {username} ({user['role']})!")
+                st.rerun()
+            else:
+                # Cek database
+                conn = sqlite3.connect("users.db")
+                c = conn.cursor()
+                c.execute("SELECT * FROM users WHERE username = ? AND password = ?", (username, password))
+                result = c.fetchone()
+                conn.close()
+                if result:
+                    st.session_state.logged_in = True
+                    st.session_state.username = result[4]
+                    st.session_state.role = result[6]
+                    st.success(f"Selamat datang, {result[1]} ({result[6]})!")
+                    st.rerun()
+                else:
+                    st.error("Username atau password salah.")
+
+    # --- Register Tab ---
+    with tab_register:
+        new_name = st.text_input("Nama Lengkap")
+        new_alamat = st.text_area("Alamat")
+        new_hp = st.text_input("No. Telepon")
+        new_username = st.text_input("Buat Username")
+        new_password = st.text_input("Buat Password", type="password")
+
+        if st.button("Daftar"):
+            if new_name and new_alamat and new_hp and new_username and new_password:
+                try:
+                    conn = sqlite3.connect("users.db")
+                    c = conn.cursor()
+                    c.execute("""
+                        CREATE TABLE IF NOT EXISTS users (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            nama TEXT,
+                            alamat TEXT,
+                            no_hp TEXT,
+                            username TEXT UNIQUE,
+                            password TEXT,
+                            role TEXT
+                        )
+                    """)
+                    c.execute("INSERT INTO users (nama, alamat, no_hp, username, password, role) VALUES (?, ?, ?, ?, ?, ?)",
+                              (new_name, new_alamat, new_hp, new_username, new_password, "buyer"))
+                    conn.commit()
+                    conn.close()
+                    st.success("Pendaftaran berhasil! Silakan login.")
+                    st.rerun()
+                except sqlite3.IntegrityError:
+                    st.error("Username sudah digunakan. Coba yang lain.")
+            else:
+                st.warning("Harap isi semua data.")
+
+if not st.session_state.logged_in:
+    login_page()
+    st.stop()
 
 def logout():
     st.session_state.logged_in = False
     st.session_state.role = None
+    st.session_state.username = None
     st.rerun()
-
-if not st.session_state.logged_in:
-    login()
-    st.stop()
 
 # =========================
 # 🔧 Init DB for Keuangan
@@ -129,7 +189,6 @@ if menu == "Home":
     Kami hadir untuk memudahkan para petani dan pelanggan dalam memenuhi kebutuhan pertanian:
     - Pembelian wortel segar dan bibit berkualitas
     - Beragam pupuk dan alat pertanian
-    - Sistem checkout otomatis dengan pengurangan stok
     """)
 
 # =========================
@@ -180,7 +239,20 @@ elif menu == "Checkout":
         alamat = st.text_area("Masukkan alamat lengkap Anda", placeholder="Contoh: Jl. Mawar No. 123, Bandung")
 
         st.subheader("💳 Metode Pembayaran")
-        metode = st.radio ("Pilih metode pembayaran", ["BCA", "Mandiri", "DANA"])
+        opsi_metode = ["--Pilih Bank--", "BCA", "Mandiri", "DANA"]
+        metode = st.radio("Pilih metode pembayaran", opsi_metode)
+        if metode == "BCA":
+            st.info("💳 Nomor rekening: 58442352208 a.n. Wortel Balap")
+        elif metode == "Mandiri":
+            st.info("💳 Nomor rekening: 12344567890 a.n. Wortel Balap")
+        elif metode == "DANA":
+            st.info("💳 Nomor rekening: 085955557777 a.n. Wortel Balap")
+
+        st.markdown("""
+        📧 Jangan lupa kirim *bukti pembayaran* ke email kami ya!
+        Cek info lengkapnya di menu *Contact* (sidebar). Agar pesananmu bisa segera kami proses. 
+        Terima kasih!🥕
+        """)
 
         if st.button("✅ Place Order"):
             conn = sqlite3.connect("keuangan.db")
@@ -218,14 +290,12 @@ elif menu == "Transaksi":
             total_pendapatan = df["subtotal"].sum()
             st.markdown(f"💵 Total Pendapatan: Rp{total_pendapatan}")
 
-            # Export ke Excel
             tanggal_hari_ini = datetime.today().strftime('%Y-%m-%d_%H%M%S')
             buffer = BytesIO()
 
-            # Gunakan mode ini agar file benar-benar tersimpan di buffer
             with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
                 df.to_excel(writer, index=False, sheet_name="Laporan")
-            buffer.seek(0)  # posisi ulang pointer ke awal
+            buffer.seek(0)
 
             st.download_button(
                 label="📥 Download Laporan (Excel)",
